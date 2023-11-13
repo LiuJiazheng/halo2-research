@@ -1,4 +1,4 @@
-use crate::memory_table::{MemTableEntry, MemTableEntryCell};
+use crate::memory_table::MemTableEntry;
 use core::panic;
 use halo2_proofs::{
     arithmetic::Field,
@@ -142,7 +142,7 @@ impl<F: Field> LastWriteTableChip<F> {
         &self,
         mut layouter: impl Layouter<F>,
         memtbl_entries: &[MemTableEntry<F>],
-    ) -> Result<Vec<MemTableEntryCell<F>>, Error> {
+    ) -> Result<Vec<MemTableEntry<F>>, Error> {
         let config = &self.config;
         let (lw_addr, lw_id, lw_value) = if let [addr, id, value] = (0..3)
             .map(|i| config.advice[i])
@@ -153,14 +153,15 @@ impl<F: Field> LastWriteTableChip<F> {
             panic!("wrong match")
         };
 
-        let mut lw_table: Vec<MemTableEntryCell<F>> = vec![];
+        let lw_tbl = memtbl_entries.clone().to_vec();
+
         // Allocate lwtbl based on the given entries
         let _ = layouter
             .assign_region(
                 || "assign lw table",
                 |mut region: Region<F>| {
                     for (i, entry) in memtbl_entries.iter().enumerate() {
-                        let cell_addr = region
+                        let _cell_addr = region
                             .assign_advice(
                                 || format!("{} addr", i),
                                 lw_addr,
@@ -168,7 +169,7 @@ impl<F: Field> LastWriteTableChip<F> {
                                 || Value::known(entry.addr),
                             )
                             .unwrap();
-                        let cell_id = region
+                        let _cell_id = region
                             .assign_advice(
                                 || format!("{} id", i),
                                 lw_id,
@@ -176,7 +177,7 @@ impl<F: Field> LastWriteTableChip<F> {
                                 || Value::known(entry.id),
                             )
                             .unwrap();
-                        let cell_value = region
+                        let _cell_value = region
                             .assign_advice(
                                 || format!("{} value", i),
                                 lw_value,
@@ -185,22 +186,13 @@ impl<F: Field> LastWriteTableChip<F> {
                             )
                             .unwrap();
                         config.sel.enable(&mut region, i)?;
-                        lw_table.push(MemTableEntryCell {
-                            addr: cell_addr,
-                            id: cell_id,
-                            value: cell_value,
-                        });
                     }
                     Ok(())
                 },
             )
             .unwrap();
 
-        // Above assignment would do twice
-        assert!(lw_table.len() % 2 == 0);
-        lw_table.truncate(lw_table.len() / 2);
-
-        Ok(lw_table)
+        Ok(lw_tbl)
     }
 }
 
