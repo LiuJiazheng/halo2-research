@@ -8,8 +8,8 @@ use halo2_proofs::{
 };
 use std::marker::PhantomData;
 
-struct LastWriteTableChip<F: Field> {
-    config: LastWriteTableConfig,
+pub struct LastWriteTableChip<F: Field> {
+    pub config: LastWriteTableConfig,
     _marker: PhantomData<F>,
 }
 
@@ -273,7 +273,7 @@ mod tests {
             // Assign range
             memtbl_chip.assign_range(layouter.namespace(|| "assign range"))?;
             // Assign table
-            let lwtbl_from_memtbl = memtbl_chip
+            let (lwtbl_from_memtbl, _) = memtbl_chip
                 .assign_table(layouter.namespace(|| "assign table"), &self.entries)
                 .unwrap();
 

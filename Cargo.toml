@@ -2,3 +2,4 @@
 members = [
     "mem_cont",
 ]
+resolver = "2"
