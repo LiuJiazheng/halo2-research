@@ -63,28 +63,19 @@ impl<F: Field> MemTableChip<F> {
             meta.enable_equality(*col);
         }
 
-        let (addr, addr_delta_inv, id, is_access_type_init, is_access_type_last_write, value) =
-            if let [addr, addr_delta_inv, id, is_access_type_init, is_access_type_last_write, value] =
-                (0..6).map(|i| advice[i]).collect::<Vec<Column<Advice>>>()[..]
-            {
-                (
-                    addr,
-                    addr_delta_inv,
-                    id,
-                    is_access_type_init,
-                    is_access_type_last_write,
-                    value,
-                )
-            } else {
-                panic!("wrong match")
-            };
-        let (binary_range, memory_range, value_range) = if let [binary_range, memory_range, value_range] =
-            (0..3).map(|i| range[i]).collect::<Vec<TableColumn>>()[..]
-        {
-            (binary_range, memory_range, value_range)
-        } else {
-            panic!("wrong match")
-        };
+        let (addr, addr_delta_inv, id, is_access_type_init, is_access_type_last_write, value) = destructure_buffer!(
+            advice,
+            (
+                addr,
+                addr_delta_inv,
+                id,
+                is_access_type_init,
+                is_access_type_last_write,
+                value
+            )
+        );
+        let (binary_range, memory_range, value_range) =
+            destructure_buffer!(range, (binary_range, memory_range, value_range));
 
         // Sel_selector is only used within this chip
         let init_sel = meta.complex_selector();
@@ -341,7 +332,7 @@ impl<F: Field> MemTableChip<F> {
         &self,
         mut layouter: impl Layouter<F>,
         entries: &[MemTableEntry<F>],
-    ) -> Result<(Vec<MemTableEntry<F>>, Vec<MemTableEntryCell<F>>), Error> {
+    ) -> Result<Vec<MemTableEntry<F>>, Error> {
         let config = &self.config;
         macro_rules! is_not_equal {
             ($lhs:expr, $rhs:expr) => {
@@ -373,7 +364,6 @@ impl<F: Field> MemTableChip<F> {
 
         // Prepare vec for return
         let mut lw_entries: Vec<MemTableEntry<F>> = vec![];
-        let mut lw_cells: Vec<MemTableEntryCell<F>> = vec![];
 
         // Allocate mem table entries
         // assign_region would be called even in single pass layouter
@@ -419,7 +409,7 @@ impl<F: Field> MemTableChip<F> {
                     config.sel.enable(&mut region, i + offset)?;
                     // First one, no need for addr_bit
                     if i == 0 {
-                        let addr = region.assign_advice(
+                        region.assign_advice(
                             || "first addr",
                             addr,
                             i + offset,
@@ -431,7 +421,7 @@ impl<F: Field> MemTableChip<F> {
                             i + offset,
                             || Value::known(F::ZERO),
                         )?; // This one shall not be checked, but cannot be None as well
-                        let id = region.assign_advice(
+                        region.assign_advice(
                             || "first id",
                             id,
                             i + offset,
@@ -460,7 +450,7 @@ impl<F: Field> MemTableChip<F> {
                                 });
                             }
                         }
-                        let value = region.assign_advice(
+                        region.assign_advice(
                             || "first value",
                             value,
                             i + offset,
@@ -468,15 +458,10 @@ impl<F: Field> MemTableChip<F> {
                         )?;
                         // Enable init selector
                         config.init_sel.enable(&mut region, i + offset)?;
-                        lw_cells.push(MemTableEntryCell {
-                            addr,
-                            id,
-                            value,
-                        });
                     }
                     // Last one
                     else if i == entries.len() - 1 {
-                        let addr = region.assign_advice(
+                        region.assign_advice(
                             || "last addr",
                             addr,
                             i + offset,
@@ -636,10 +621,7 @@ impl<F: Field> MemTableChip<F> {
         assert!(lw_entries.len() % 2 == 0);
         lw_entries.truncate(lw_entries.len() / 2);
 
-        assert!(lw_cells.len() % 2 == 0);
-        lw_cells.truncate(lw_cells.len() / 2);
-
-        Ok((lw_entries, lw_cells))
+        Ok(lw_entries)
     }
 }
 
@@ -749,15 +731,6 @@ mod tests {
                 a.addr.cmp(&b.addr)
             }
         });
-
-        println!("Sorted Entries are: ");
-        for entry in entries.iter() {
-            println!(
-                "addr: {:?}, id: {:?}, value: {:?}",
-                entry.addr, entry.id, entry.value
-            );
-        }
-        println!("End of sorted entries");
 
         // Create the circuit
         let circuit = MinimalMemTable { entries };

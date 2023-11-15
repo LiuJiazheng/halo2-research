@@ -63,24 +63,10 @@ impl<F: Field> LastWriteTableChip<F> {
         }
 
         // Load name of columns
-        let (memtbl_addr, memtbl_id, memtbl_value, is_last_write) = if let [addr, id, value, is_last_write] =
-            (0..4)
-                .map(|i| memtbl_schema[i])
-                .collect::<Vec<Column<Advice>>>()[..]
-        {
-            (addr, id, value, is_last_write)
-        } else {
-            panic!("wrong match")
-        };
+        let (memtbl_addr, memtbl_id, memtbl_value, is_last_write) =
+            destructure_buffer!(memtbl_schema, (addr, id, value, is_last_write));
 
-        let (lw_addr, lw_id, lw_value) = if let [addr, id, value] = (0..3)
-            .map(|i| last_write_schema[i])
-            .collect::<Vec<Column<Advice>>>()[..]
-        {
-            (addr, id, value)
-        } else {
-            panic!("wrong match")
-        };
+        let (lw_addr, lw_id, lw_value) = destructure_buffer!(last_write_schema, (addr, id, value));
 
         // Lookup Conditions:
         // is_last_write must be in binary range
@@ -273,7 +259,7 @@ mod tests {
             // Assign range
             memtbl_chip.assign_range(layouter.namespace(|| "assign range"))?;
             // Assign table
-            let (lwtbl_from_memtbl, _) = memtbl_chip
+            let lwtbl_from_memtbl = memtbl_chip
                 .assign_table(layouter.namespace(|| "assign table"), &self.entries)
                 .unwrap();
 

@@ -2,15 +2,13 @@ use core::panic;
 use ff::PrimeField;
 use halo2_proofs::{
     arithmetic::Field,
-    circuit::{Chip, Layouter, Value, AssignedCell},
-    plonk::{Advice, Expression, Column, ConstraintSystem, Error, TableColumn},
+    circuit::{Chip, Layouter, Value},
+    plonk::{Advice, Column, ConstraintSystem, Error, TableColumn},
     poly::Rotation,
 };
 use std::marker::PhantomData;
 
-use crate::{
-    lastwrite_table::LastWriteTableConfig, memory_table::MemTableEntry,
-};
+use crate::{lastwrite_table::LastWriteTableConfig, memory_table::MemTableEntry};
 
 pub struct RTableChip<F: Field> {
     config: RTableConfig,
@@ -24,8 +22,6 @@ pub struct RTableConfig {
     /// Is the entry in the right table overwritten by left table?
     /// Since we know left table is always the latest write
     pub overwrite: Column<Advice>,
-    /// Eid boundary
-    pub eid_boundary: Column<Advice>,
 }
 
 impl<F: Field> Chip<F> for RTableChip<F> {
@@ -54,36 +50,23 @@ impl<F: Field + std::cmp::Ord + PrimeField> RTableChip<F> {
         ref_ltable: &LastWriteTableConfig,
         rtable: LastWriteTableConfig,
         overwrite: Column<Advice>,
-        eid_boundary: Column<Advice>,
         ranges: [TableColumn; 3],
     ) -> <Self as Chip<F>>::Config {
         for col in rtable.advice.iter() {
             meta.enable_equality(*col);
         }
         meta.enable_equality(overwrite);
-        meta.enable_equality(eid_boundary);
 
         // Load names of left table columns
         let left_addr = ref_ltable.advice[0];
 
         // Load names of right table columns
-        let (right_addr, right_id, right_value) = if let [addr, id, value] = (0..3)
-            .map(|i| rtable.advice[i])
-            .collect::<Vec<Column<Advice>>>()[..]
-        {
-            (addr, id, value)
-        } else {
-            panic!("wrong match")
-        };
+        let (right_addr, right_id, right_value) =
+            destructure_buffer!(rtable.advice, (addr, id, value));
 
         // Load names of range columns
-        let (binary_range, memory_range, value_range) = if let [binary, memory, value] =
-            (0..3).map(|i| ranges[i]).collect::<Vec<TableColumn>>()[..]
-        {
-            (binary, memory, value)
-        } else {
-            panic!("wrong match")
-        };
+        let (binary_range, memory_range, value_range) =
+            destructure_buffer!(ranges, (binary, memory, value));
 
         // Load names of selectors
         let right_sel = rtable.sel;
@@ -117,18 +100,6 @@ impl<F: Field + std::cmp::Ord + PrimeField> RTableChip<F> {
             vec![(s * overwrite, binary_range)]
         });
 
-        // eid constraints
-        // Right table is, semanticlly, the 'previous last write table'. So it possesses:
-        // For any entry x in rtable, x.eid < eid from memtbl
-        // Namely the minial eid of memtbl. Since memtbl is sorted, it must be first one
-        meta.lookup(format!("right eid"), |meta| {
-            let s = meta.query_selector(right_sel);
-            let eid_boundary = meta.query_advice(eid_boundary, Rotation::cur());
-            let right_id = meta.query_advice(right_id, Rotation::cur());
-
-            vec![(s * (eid_boundary - right_id - Expression::Constant(F::ONE)), memory_range)]
-        });
-
         // Overwrite constraints
         // There is a chance that if left table may also contain the same addr as right table, thus
         // the right table entry shall be fully overwritten
@@ -148,11 +119,7 @@ impl<F: Field + std::cmp::Ord + PrimeField> RTableChip<F> {
             vec![(s * overwrite * right_addr, left_addr)]
         });
 
-        RTableConfig {
-            rtable,
-            overwrite,
-            eid_boundary,
-        }
+        RTableConfig { rtable, overwrite }
     }
 
     /// left table is `current_last_write_table` and
@@ -162,21 +129,12 @@ impl<F: Field + std::cmp::Ord + PrimeField> RTableChip<F> {
         mut layouter: impl Layouter<F>,
         previous_last_write_table: &[MemTableEntry<F>],
         current_last_write_table: &[MemTableEntry<F>],
-        eid_maximal: AssignedCell<F,F>,
     ) -> Result<Vec<MemTableEntry<F>>, Error> {
         // Set up columns names
         let config = self.config();
-        let (addr, id, value) = if let [addr, id, value] = (0..3)
-            .map(|i| config.rtable.advice[i])
-            .collect::<Vec<Column<Advice>>>()[..]
-        {
-            (addr, id, value)
-        } else {
-            panic!("wrong match")
-        };
+        let (addr, id, value) = destructure_buffer!(config.rtable.advice, (addr, id, value));
         let sel = config.rtable.sel;
         let overwrite = config.overwrite;
-        let eid_boundary = config.eid_boundary;
 
         // Set up lookup btree
         let mut lookup = std::collections::BTreeMap::new();
@@ -190,7 +148,12 @@ impl<F: Field + std::cmp::Ord + PrimeField> RTableChip<F> {
             };
         }
 
-        let mut rtable = vec![];
+        let mut extracted_rtable = vec![];
+        for entry in previous_last_write_table.iter() {
+            if lookup_addr!(entry.addr) == 0 {
+                extracted_rtable.push(entry.clone());
+            }
+        }
 
         let _ = layouter.assign_region(
             || "assign rtable",
@@ -217,30 +180,21 @@ impl<F: Field + std::cmp::Ord + PrimeField> RTableChip<F> {
                         i,
                         || Value::known(F::from_u128(lookup_addr!(entry.addr))),
                     )?;
-                    let _ = eid_maximal.copy_advice(||"copy eid boudary", &mut region, eid_boundary, i)?;
-
-                    if lookup_addr!(entry.addr) == 0 {
-                        rtable.push(entry.clone());
-                    }
                 }
                 Ok(())
             },
         );
 
-        // Assign would be called twice
-        assert!(rtable.len() % 2 == 0);
-        rtable.truncate(rtable.len() / 2);
-
-        Ok(rtable)
+        Ok(extracted_rtable)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory_table::{MemTableChip, MemTableConfig};
     use crate::lastwrite_table::{LastWriteTableChip, LastWriteTableConfig};
-    use crate::param::VALUE_RANGE_BITS;
+    use crate::memory_table::{MemTableChip, MemTableConfig};
+    use crate::param::{MEM_RANGE_BITS, VALUE_RANGE_BITS};
     use halo2_proofs::circuit::SimpleFloorPlanner;
     use halo2_proofs::plonk::Circuit;
     use proptest::prelude::Rng;
@@ -302,7 +256,6 @@ mod tests {
             let rtbl_advice = [(); 3].map(|_| meta.advice_column());
             let rtbl_sel = meta.complex_selector();
             let rtbl_overwrite = meta.advice_column();
-            let rtbl_eid_boundary = meta.advice_column();
             let rtbl_config = RTableChip::configure(
                 meta,
                 &lwtbl_config,
@@ -311,7 +264,6 @@ mod tests {
                     sel: rtbl_sel,
                 },
                 rtbl_overwrite,
-                rtbl_eid_boundary,
                 ranges,
             );
 
@@ -332,7 +284,7 @@ mod tests {
             // Assign range
             memtbl_chip.assign_range(layouter.namespace(|| "assign range"))?;
             // Assign table
-            let (lwtbl_from_memtbl, cells) = memtbl_chip
+            let lwtbl_from_memtbl = memtbl_chip
                 .assign_table(layouter.namespace(|| "assign table"), &self.entries)
                 .unwrap();
 
@@ -351,7 +303,6 @@ mod tests {
                 layouter.namespace(|| "assign rtable"),
                 &self.previous_last_write_table,
                 &cur_lwtbl,
-                cells[0].id.clone(),
             )?;
 
             Ok(())
@@ -368,22 +319,31 @@ mod tests {
         // The number of rows in our circuit cannot exceed 2^k. Since our example
         // circuit is very small, we can pick a very small value here.
         let k = 8;
-        let local_range_bits = 3;
+        let local_range_bits = MEM_RANGE_BITS - 1;
 
         // Create an buffer
         let mut entries: Vec<MemTableEntry<Fr>> = vec![];
 
         // Prepare the private inputs to the circuit!
         let mut rng = OsRng;
+
+        // Prepare previous last write table
+        let mut previous_last_write_table: Vec<MemTableEntry<Fr>> = vec![];
         for id in 0..(1 << local_range_bits) {
-            // we only genegate 6 addresses, by Pigeonhole principle there must be some addresses with more than one entry
-            let addr = Fr::from(rng.gen_range(0..6) as u64);
+            // As last write table, address shall be different
+            let addr = Fr::from(id as u64);
+            let id = Fr::from(id as u64);
             let value = Fr::from(rng.gen_range(0..(1 << VALUE_RANGE_BITS)) as u64);
-            entries.push(MemTableEntry {
-                addr,
-                id: Fr::from( (1<< local_range_bits) + id as u64),
-                value,
-            });
+            previous_last_write_table.push(MemTableEntry { addr, id, value });
+        }
+
+        // Then current memory table as primary witness
+        for id in (1 << local_range_bits)..(1 << MEM_RANGE_BITS) {
+            // we only genegate 4 addresses, by Pigeonhole principle there must be some addresses with more than one entry
+            let addr = Fr::from(rng.gen_range(0..4) as u64);
+            let id = Fr::from(id as u64);
+            let value = Fr::from(rng.gen_range(0..(1 << VALUE_RANGE_BITS)) as u64);
+            entries.push(MemTableEntry { addr, id, value });
         }
 
         // Sort the entries by address and then by id
@@ -395,20 +355,11 @@ mod tests {
             }
         });
 
-        // Prepare previous last write table
-        let mut previous_last_write_table: Vec<MemTableEntry<Fr>> = vec![];
-        for id in 0..((1 << local_range_bits) - 1){
-            let addr = Fr::from(id as u64);
-            let value = Fr::from(rng.gen_range(0..(1 << VALUE_RANGE_BITS)) as u64);
-            previous_last_write_table.push(MemTableEntry {
-                addr,
-                id: Fr::from(id as u64),
-                value,
-            });
-        }
-
         // Create the circuit
-        let circuit = MinimalMemTable { entries, previous_last_write_table };
+        let circuit = MinimalMemTable {
+            entries,
+            previous_last_write_table,
+        };
 
         let prover = MockProver::run(k, &circuit, vec![]).unwrap();
         assert_eq!(prover.verify(), Ok(()));
