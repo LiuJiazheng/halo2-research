@@ -42,6 +42,14 @@ impl<F: Field> LastWriteTableChip<F> {
         }
     }
 
+    /// Create a plain Config with no constraints
+    pub fn new(advice: &[Column<Advice>; 3], sel: &Selector) -> <Self as Chip<F>>::Config {
+        LastWriteTableConfig {
+            advice: *advice,
+            sel: *sel,
+        }
+    }
+
     /// Configure the last write table
     /// memtbl_schema: [addr, id, value, is_last_write]
     /// last_write_schema: [addr, id, value, heritage]
@@ -204,7 +212,7 @@ mod tests {
 
     impl<F> Circuit<F> for MinimalMemTable<F>
     where
-        F: Field,
+        F: Field + std::cmp::Ord,
     {
         type Config = CircuitConfig;
         type FloorPlanner = SimpleFloorPlanner;

@@ -38,7 +38,7 @@ impl<F: Field> Chip<F> for MemTableChip<F> {
     }
 }
 
-impl<F: Field> MemTableChip<F> {
+impl<F: Field + std::cmp::Ord> MemTableChip<F> {
     pub fn construct(config: <Self as Chip<F>>::Config) -> Self {
         Self {
             config,
@@ -344,23 +344,27 @@ impl<F: Field> MemTableChip<F> {
             };
         }
 
-        let (addr, addr_delta_inv, id, is_access_type_init, is_access_type_last_write, value) =
-            if let [addr, addr_delta_inv, id, is_access_type_init, is_access_type_last_write, value] =
-                (0..6)
-                    .map(|i| config.advice[i])
-                    .collect::<Vec<Column<Advice>>>()[..]
-            {
-                (
-                    addr,
-                    addr_delta_inv,
-                    id,
-                    is_access_type_init,
-                    is_access_type_last_write,
-                    value,
-                )
+        let (addr, addr_delta_inv, id, is_access_type_init, is_access_type_last_write, value) = destructure_buffer!(
+            config.advice,
+            (
+                addr,
+                addr_delta_inv,
+                id,
+                is_access_type_init,
+                is_access_type_last_write,
+                value
+            )
+        );
+
+        // Sort entries by address and then by id
+        let mut entries = entries.to_vec();
+        entries.sort_by(|a, b| {
+            if a.addr == b.addr {
+                a.id.cmp(&b.id)
             } else {
-                panic!("wrong match")
-            };
+                a.addr.cmp(&b.addr)
+            }
+        });
 
         // Prepare vec for return
         let mut lw_entries: Vec<MemTableEntry<F>> = vec![];
@@ -658,7 +662,7 @@ mod tests {
 
     impl<F> Circuit<F> for MinimalMemTable<F>
     where
-        F: Field,
+        F: Field + std::cmp::Ord,
     {
         type Config = CircuitConfig;
         type FloorPlanner = SimpleFloorPlanner;
